@@ -1,0 +1,307 @@
+#!/bin/csh -f
+
+####################################################################################
+## Copyright (c) 2014, University of British Columbia (UBC)  All rights reserved. ##
+##                                                                                ##
+## Redistribution  and  use  in  source   and  binary  forms,   with  or  without ##
+## modification,  are permitted  provided that  the following conditions are met: ##
+##   * Redistributions   of  source   code  must  retain   the   above  copyright ##
+##     notice,  this   list   of   conditions   and   the  following  disclaimer. ##
+##   * Redistributions  in  binary  form  must  reproduce  the  above   copyright ##
+##     notice, this  list  of  conditions  and the  following  disclaimer in  the ##
+##     documentation and/or  other  materials  provided  with  the  distribution. ##
+##   * Neither the name of the University of British Columbia (UBC) nor the names ##
+##     of   its   contributors  may  be  used  to  endorse  or   promote products ##
+##     derived from  this  software without  specific  prior  written permission. ##
+##                                                                                ##
+## THIS  SOFTWARE IS  PROVIDED  BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" ##
+## AND  ANY EXPRESS  OR IMPLIED WARRANTIES,  INCLUDING,  BUT NOT LIMITED TO,  THE ##
+## IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE ##
+## DISCLAIMED.  IN NO  EVENT SHALL University of British Columbia (UBC) BE LIABLE ##
+## FOR ANY DIRECT,  INDIRECT,  INCIDENTAL,  SPECIAL,  EXEMPLARY, OR CONSEQUENTIAL ##
+## DAMAGES  (INCLUDING,  BUT NOT LIMITED TO,  PROCUREMENT OF  SUBSTITUTE GOODS OR ##
+## SERVICES;  LOSS OF USE,  DATA,  OR PROFITS;  OR BUSINESS INTERRUPTION) HOWEVER ##
+## CAUSED AND ON ANY THEORY OF LIABILITY,  WHETHER IN CONTRACT, STRICT LIABILITY, ##
+## OR TORT  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE ##
+## OF  THIS SOFTWARE,  EVEN  IF  ADVISED  OF  THE  POSSIBILITY  OF  SUCH  DAMAGE. ##
+####################################################################################
+
+####################################################################################
+##                      Run-in-batch Synthesis Flow Manager                       ##
+##                                                                                ##
+##    Author: Ameer M. Abdelhadi (ameer@ece.ubc.ca, ameer.abdelhadi@gmail.com)    ##
+## SRAM-based Multi-ported RAMs; University of British Columbia (UBC), March 2013 ##
+####################################################################################
+
+####################################################################################
+## USAGE:                                                                         ##
+##    ./syn <Architecture List> <Bypass List> <Depth List> <Width List>   \       ##
+##          <#Write Ports List> <#Read Ports List>                                ##
+##                                                                                ##
+## -Use a comma delimited list; no spaces; can be surrounded by brackets ()[]{}<> ##
+## -RAM depth, width, number of read/write ports and cycles are positive integers ##
+## -Architecture is one of: REG, XOR, LVTREG, LVTBIN, or LVT1HT                   ##
+##   - REG   : Register-based multi-ported RAM                                    ##
+##   - XOR   : XOR-based multi-ported RAM                                         ##
+##   - LVTREG: Register-based LVT multi-ported RAM                                ##
+##   - LVTBIN: Binary-coded I-LVT-based multi-ported RAM                          ##
+##   - LVT1HT: Onehot-coded I-LVT-based multi-ported RAM                          ##
+## -Bypass list is one of: NON, WAW, RAW, or RDW                                  ##
+##   - WAW: Allow Write-After-Write (need to bypass feedback RAM)                 ##
+##   - RAW: new data for Read-after-Write (need to bypass output RAM)             ##
+##   - RDW: new data for Read-During-Write                                        ##
+##                                                                                ##
+## EXAMPLES:                                                                      ##
+## ./syn XOR NON 1024 32 3 2                                                      ##
+##    Synthesis a XOR-based RAM with no bypassing; 1K lines RAM; 32 bits width;   ##
+##    3 write & 2 read ports                                                      ##
+## ./syn LVTBIN,LVT1HT RAW,RDW 512,1024 8,16,32 2,3,4 1,2,3,4                     ##
+##    Synthesis LVTBIN and LVT1HT RAMs with new data RAW and RDW bypassing; 512   ##
+##    and 1024 lines; 8,16, and 32 data width; 2,3, and 4 write ports; 1,2,3, and ## 
+##    4 read ports. Total of 144 RAM combinations.                                ##
+##                                                                                ##
+## The following files and directories will be created after compilation:         ##
+##   - syn.res : A list of results, each run in a separate line, including:       ##
+##               frequency, resources usage, and runtime                          ##
+##   - log/    : Altera's logs and reports                                        ##
+####################################################################################
+
+# setup environment variables and cad tools 
+# change if necessary
+#source env.csh
+
+# setup Altera's tools; change to your own flow if necessary 
+source /CMC/scripts/altera.12.0.csh
+setenv PATH ${QUARTUS_HOME}/../nios2eds/bin/:${QUARTUS_HOME}/../modelsim_ase/bin:${PATH}
+
+# require exactly 6 arguments
+if (${#argv} != 6) then
+    printf '\x1b[%i;3%im' 1 1
+    printf 'Error: Exactly 6 are required\n'
+    printf '\x1b[0m'
+    goto errorMessage
+endif
+
+# convert each argument list into a c-shell list (romove commas and etc.)
+set ARLST = (`echo ${argv[1]} | tr ",()[]{}<>" " "`)
+set BYLST = (`echo ${argv[2]} | tr ",()[]{}<>" " "`)
+set RDLST = (`echo ${argv[3]} | tr ",()[]{}<>" " "`)
+set DWLST = (`echo ${argv[4]} | tr ",()[]{}<>" " "`)
+set NWLST = (`echo ${argv[5]} | tr ",()[]{}<>" " "`)
+set NRLST = (`echo ${argv[6]} | tr ",()[]{}<>" " "`)
+
+# check arguments correctness (positive integer numbers)
+foreach INTVAL ($RDLST $DWLST $NWLST $NRLST)
+  set INTVALIsNumber=`echo $INTVAL | egrep -c '^[0-9]+$'`
+  if ($INTVALIsNumber != 1) then
+    printf '\x1b[%i;3%im' 1 1
+    printf "Error \(${INTVAL}\): Depth, width, numner of read/write ports arguments should be possitive integer numbers\n"
+    printf '\x1b[0m'
+    goto errorMessage
+  endif
+end
+
+# check architicture list argument correctness
+foreach ARVAL ($ARLST)
+  if ( ($ARVAL != "REG") & ($ARVAL != "XOR") & ($ARVAL != "LVTREG") & ($ARVAL != "LVTBIN") & ($ARVAL != "LVT1HT") ) then
+    printf '\x1b[%i;3%im' 1 1
+    printf "Error \(${ARVAL}\): Architicture list should be a list of REG, XOR, LVTREG, LVTBIN, or LVT1HT\b\n"
+    printf '\x1b[0m'
+    goto errorMessage
+  endif
+end
+
+# check architicture list argument correctness
+foreach BYVAL ($BYLST)
+  if ( ($BYVAL != "NON") & ($BYVAL != "WAW") & ($BYVAL != "RAW") & ($BYVAL != "RDW") ) then
+    printf '\x1b[%i;3%im' 1 1
+    printf "Error \(${BYVAL}\): BYpass list should be a list of NON, WAW, RAW, or RDW\b\n"
+    printf '\x1b[0m'
+    goto errorMessage
+  endif
+end
+
+# total different fifo designs
+@ FlowOprNum = ((${#RDLST})*(${#DWLST})*(${#NWLST})*(${#NRLST})*(${#ARLST})*(${#BYLST}))
+@ FlowOprCnt = 0
+
+printf '\x1b[%i;3%im' 7 4
+printf "= Synthesis in batch with the following parameters:\n"
+printf "= RAM Depth    : $RDLST\n"
+printf "= Data Width   : $DWLST\n"
+printf "= Write Ports  : $NWLST\n"
+printf "= Read  Ports  : $NRLST\n"
+printf "= Architicture : $ARLST\n"
+printf "= Bypass       : $BYLST\n"
+printf '\x1b[0m'
+
+#print header
+set FML  = `grep " FAMILY " mpram.qsf | cut -d\"  -f2`
+set DEV  = `grep " DEVICE " mpram.qsf | cut -d" " -f4`
+set TTL1 = '                               FmaxMHz 0.95v A    L    U    T   s Combinatorial ALUTs by LUT #inputs Combinatorial ALUTs by Mode   Registers          L    A    B    s  I / O  Pins           BRAM Bits Utiliz.             \n'
+set TTL2 = '              RAM   Data  Write Read  ------------- -------------------- ---------------------------------- --------------------------- ------------- Total  ----------------- ----------- BRAM MLAB -----------------      Runtime\n'
+set TTL3 = 'Arch.  Bypass Depth Width Ports Ports T = 0c T=100c Total  Combi. Memory 7-LUTs 6-LUTs 5-LUTs 4-LUTs 3-LUTs Normal exten. Arith. Shared Total  Dedic.  ALMs  Total Logic Mem.  Tot Clk Ded M20K Bits Utilized Occupied DSPs Minutes\n'
+set SEPR = '====== ====== ===== ===== ===== ===== ====== ====== ====== ====== ====== ====== ====== ====== ====== ====== ====== ====== ====== ====== ====== ====== ====== ===== ===== ===== === === === ==== ==== ======== ======== ==== =======\n'
+set FRMT = (`echo $SEPR| tr " " "\n" | perl -nle '$a= length; print "%-${a}s"' | tr "\n" " "`)
+if !(-f syn.res) then
+  printf "$FML $DEV\n\n$TTL1$TTL2$TTL3$SEPR" >! syn.res
+endif
+
+#initialize result values
+set val  = (`repeat 35 echo "N/A"`)
+
+# create log directoy
+if !(-d log) mkdir log
+
+# operate on all different RAM parameters
+foreach CURRD ($RDLST)
+  foreach CURDW ($DWLST)
+    foreach CURNW ($NWLST)
+      foreach CURNR ($NRLST)
+        foreach CURAR ($ARLST)
+          foreach CURBY ($BYLST)
+
+            @ FlowOprCnt++
+            set curRunStartTime      = `date +%T`
+            set curRunStartTimeStamp = `date +%s`
+            set RUNNAME = "${CURAR}_${CURRD}x${CURDW}-${CURNW}W${CURNR}R"
+
+            printf '\x1b[%i;3%im' 7 2
+            printf "\n== Starting Synthesis  (${FlowOprCnt}/${FlowOprNum}) @${curRunStartTime}: [Depth:${CURRD}; Width:${CURDW}; Writes:${CURNW}; Reads:${CURNR}; Architicture:${CURAR}]\n"
+            printf '\x1b[0m'
+
+            # create configuration file base on architectural
+            printf '// Multi-ported RAM Configuration File\n'                                           >! config.vh
+            printf '// Generated by flow manager before logic synthesis\n'                              >> config.vh
+            printf '`define TYPE    "%s"\t// Implementation: REG, XOR, LVTREG, LVTBIN, LVT1HT\n' $CURAR >> config.vh
+            printf '`define BYP     "%s"\t\t// Bypass: NON, WAW, RAW, RDW\n'                     $CURBY >> config.vh
+            printf '`define MEMD    %s\t\t// RAM Depth (lines) \n'                               $CURRD >> config.vh
+            printf '`define DATAW   %s\t\t// Data Width (bits) \n'                               $CURDW >> config.vh
+            printf '`define nWPORTS %s\t\t// Number of writing ports (>1)\n'                     $CURNW >> config.vh
+            printf '`define nRPORTS %s\t\t// Number of reading ports\n'                          $CURNR >> config.vh
+
+            # clean previous report files before run
+            foreach fileName (mpram.asm.rpt mpram.eda.rpt mpram.fit.rpt mpram.flow.rpt mpram.map.rpt mpram.sta.rpt mpram.done mpram.fit.summary mpram.map.summary mpram.sta.summary mpram.pin mpram.sof)
+              if (-e $fileName) \rm -rf $fileName
+            end
+
+            # clean previous values before run
+            set val  = (`repeat 35 echo "N/A"`)
+
+            # run current synthesis
+            quartus_map --64bit --read_settings_files=on --write_settings_files=off mpram -c mpram  | tee log/${RUNNAME}.map.log
+            quartus_cdb --64bit --merge  mpram -c mpram                                             | tee log/${RUNNAME}.cdb.log
+            quartus_fit --64bit --read_settings_files=off --write_settings_files=off mpram -c mpram | tee log/${RUNNAME}.fit.log
+            quartus_sta --64bit mpram -c mpram                                                      | tee log/${RUNNAME}.sta.log
+
+            # calculate runtime and generate a report / per run
+            set curRunFinishTime      = `date +%T`
+            set curRunFinishTimeStamp = `date +%s`
+            @   curRunTimeDiff        = $curRunFinishTimeStamp - $curRunStartTimeStamp
+            set curRuntimeMin         =   `echo "scale=2;$curRunTimeDiff/60"|bc`
+
+            # collect data
+            set val[1]  = $CURAR
+            set val[2]  = $CURBY
+            set val[3]  = $CURRD
+            set val[4]  = $CURDW
+            set val[5]  = $CURNW
+            set val[6]  = $CURNR
+            if (-f mpram.sta.rpt) then
+              set val[7]  = `grep -a4 "Slow 900mV 0C Model Fmax Summary"   mpram.sta.rpt | tail -1 | cut -d" " -f2 | tr -d " \n"`; 
+              set val[8]  = `grep -a4 "Slow 900mV 85C Model Fmax Summary" mpram.sta.rpt | tail -1 | cut -d" " -f2 | tr -d " \n"`
+            endif
+            if (-f mpram.fit.rpt) then
+              grep -A100 "; Fitter Resource Usage Summary" mpram.fit.rpt >! FitterResourceUsageSummary.tmp
+              set val[9]   = `grep ";\s*ALUTs Used\s*;"                                FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[10]  = `grep ";\s*-- Combinational ALUTs\s*;"                    FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[11]  = `grep ";\s*-- Memory ALUTs\s*;"                           FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[12]  = `grep ";\s*-- 7 input functions\s*;"                      FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[13]  = `grep ";\s*-- 6 input functions\s*;"                      FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[14]  = `grep ";\s*-- 5 input functions\s*;"                      FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[15]  = `grep ";\s*-- 4 input functions\s*;"                      FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[16]  = `grep ";\s*-- <=3 input functions\s*;"                    FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[17]  = `grep ";\s*-- normal mode\s*;"                            FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[18]  = `grep ";\s*-- extended LUT mode\s*;"                      FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[19]  = `grep ";\s*-- arithmetic mode\s*;"                        FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[20]  = `grep ";\s*-- shared arithmetic mode\s*;"                 FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[21]  = `grep ";\s*Total registers\*\s*;"                         FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[22]  = `grep ";\s*-- Dedicated logic registers\s*;"              FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[23]  = `grep ";\s*ALMs:  partially or completely used\s*;"       FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[24]  = `grep ";\s*Total LABs:  partially or completely used\s*;" FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[25]  = `grep ";\s*-- Logic LABs\s*;"                             FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[26]  = `grep ";\s*-- Memory LABs\s*;"                            FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[27]  = `grep ";\s*I/O pins\s*;"                                  FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[28]  = `grep ";\s*-- Clock pins\s*;"                             FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[29]  = `grep ";\s*-- Dedicated input pins\s*;"                   FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[30]  = `grep ";\s*M20K blocks \s*;"                              FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[31]  = `grep ";\s*Total MLAB memory bits\s*;"                    FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[32]  = `grep ";\s*Total block memory bits\s*;"                   FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[33]  = `grep ";\s*Total block memory implementation bits\s*;"    FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[34]  = `grep ";\s*Total DSP Blocks\s*;"                          FitterResourceUsageSummary.tmp | cut -d";" -f3 | cut -d"/" -f1| tr -d ", "`
+              set val[35]  = $curRuntimeMin
+              \rm -rf FitterResourceUsageSummary.tmp
+            endif
+            foreach i (`seq 35`)
+              if ( $val[$i] == "" ) set val[$i] = "N/A"
+            end
+
+            # print to report
+            printf "$FRMT\n" $val >> syn.res
+
+            # move log files into log directory
+            foreach fileName (mpram.asm.rpt mpram.eda.rpt mpram.fit.rpt mpram.flow.rpt mpram.map.rpt mpram.sta.rpt mpram.done mpram.fit.summary mpram.map.summary mpram.sta.summary mpram.pin)
+              if (-f $fileName) mv $fileName "log/${RUNNAME}.`echo $fileName | cut -d. -f2-`"
+            end
+
+            printf '\x1b[%i;3%im' 7 2
+            printf "== Synthesis (${FlowOprCnt}/${FlowOprNum}) Completed after ${curRuntimeMin} minutes: [Depth:${CURRD}; Width:${CURDW}; Writes:${CURNW}; Reads:${CURNR}; Architicture:${CURAR}]\n"
+            printf '\x1b[0m'
+
+          end
+        end
+      end
+    end
+  end
+end
+
+# clean unrequired files / after run
+foreach fileName (db/ hc_output/ incremental_db/ mpram.asm.rpt mpram.eda.rpt mpram.merge.rpt mpram.fit.rpt mpram.flow.rpt mpram.map.rpt mpram.sta.rpt mpram.done mpram.merge.summary mpram.fit.summary mpram.fit.smsg mpram.map.summary mpram.sta.summary mpram.pin mpram.sof)
+  if (-e $fileName) \rm -rf $fileName
+end
+
+goto scriptEnd
+
+# error message
+errorMessage:
+printf '\x1b[%i;3%im' 1 1
+printf 'USAGE:                                                                        \n'
+printf '   ./syn <Architicture List> <Bypass List> <Depth List> <Width List>   \      \n'
+printf '         <#Write Ports List> <#Read Ports List>                               \n'
+printf '-Use a comma delimited list; no spaces; can be surrounded by brackets ()[]{}<>\n'
+printf '-RAM depth, width, number of read/write ports and cycles are positive integers\n'
+printf '-Architicture is one of: REG, XOR, LVTREG, LVTBIN, or LVT1HT                  \n'
+printf '  - REG   : Register-based multi-ported RAM                                   \n'
+printf '  - XOR   : XOR-based nulti-ported RAM                                        \n'
+printf '  - LVTREG: Register-based LVT multi-ported RAM                               \n'
+printf '  - LVTBIN: Binary-coded I-LVT-based multi-ported RAM                         \n'
+printf '  - LVT1HT: onehot-coded I-LVT-based multi-ported RAM                         \n'
+printf '-Bypass list is one of: NON, WAW, RAW , RDW (new data Read After/During Write)\n'
+printf '  - WAW: Allow Write-After-Write (need to bypass feedback RAM)                \n'
+printf '  - RAW: new data for Read-after-Write (need to bypass output RAM)            \n'
+printf '  - RDW: new data for Read-During-Write                                       \n'
+printf 'EXAMPLES:                                                                     \n'
+printf './syn XOR NON 1024 32 3 2                                                     \n'
+printf '   Synthesis a XOR-based RAM with no bypassing; 1K lines RAM; 32 bits width;  \n'
+printf '   3 write & 2 read ports                                                     \n'
+printf './syn LVTBIN,LVT1HT RAW,RDW 512,1024 8,16,32 2,3,4 1,2,3,4                    \n'
+printf '   Synthesis LVTBIN and LVT1HT RAMs with new data RAW and RDW bypassing; 512  \n'
+printf '   and 1024 lines; 8,16, and 32 data width; 2,3, and 4 write ports; 1,2,3, and\n'
+printf '   4 read ports. Total of 144 RAM combinations.                               \n'
+printf 'The following files and directories will be created after compilation:        \n'
+printf '  - syn.res : A list of results, each run in a separate line, including:      \n'
+printf '              frequency, resources usage, and runtime                         \n'
+printf '  - log/    : Alteras logs and reports                                        \n'
+printf '\x1b[0m'
+scriptEnd:
+

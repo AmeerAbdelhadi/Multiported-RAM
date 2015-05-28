@@ -1,0 +1,155 @@
+#!/bin/csh -f
+
+####################################################################################
+## Copyright (c) 2013, University of British Columbia (UBC)  All rights reserved. ##
+##                                                                                ##
+## Redistribution  and  use  in  source   and  binary  forms,   with  or  without ##
+## modification,  are permitted  provided that  the following conditions are met: ##
+##   * Redistributions   of  source   code  must  retain   the   above  copyright ##
+##     notice,  this   list   of   conditions   and   the  following  disclaimer. ##
+##   * Redistributions  in  binary  form  must  reproduce  the  above   copyright ##
+##     notice, this  list  of  conditions  and the  following  disclaimer in  the ##
+##     documentation and/or  other  materials  provided  with  the  distribution. ##
+##   * Neither the name of the University of British Columbia (UBC) nor the names ##
+##     of   its   contributors  may  be  used  to  endorse  or   promote products ##
+##     derived from  this  software without  specific  prior  written permission. ##
+##                                                                                ##
+## THIS  SOFTWARE IS  PROVIDED  BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" ##
+## AND  ANY EXPRESS  OR IMPLIED WARRANTIES,  INCLUDING,  BUT NOT LIMITED TO,  THE ##
+## IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE ##
+## DISCLAIMED.  IN NO  EVENT SHALL University of British Columbia (UBC) BE LIABLE ##
+## FOR ANY DIRECT,  INDIRECT,  INCIDENTAL,  SPECIAL,  EXEMPLARY, OR CONSEQUENTIAL ##
+## DAMAGES  (INCLUDING,  BUT NOT LIMITED TO,  PROCUREMENT OF  SUBSTITUTE GOODS OR ##
+## SERVICES;  LOSS OF USE,  DATA,  OR PROFITS;  OR BUSINESS INTERRUPTION) HOWEVER ##
+## CAUSED AND ON ANY THEORY OF LIABILITY,  WHETHER IN CONTRACT, STRICT LIABILITY, ##
+## OR TORT  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE ##
+## OF  THIS SOFTWARE,  EVEN  IF  ADVISED  OF  THE  POSSIBILITY  OF  SUCH  DAMAGE. ##
+####################################################################################
+
+####################################################################################
+##                     Run-in-batch Simulation  Flow Manager                      ##
+##                                                                                ##
+##    Author: Ameer M. Abdelhadi (ameer@ece.ubc.ca, ameer.abdelhadi@gmail.com)    ##
+## SRAM-based Multi-ported RAMs; University of British Columbia (UBC), March 2013 ##
+####################################################################################
+
+####################################################################################
+## USAGE:                                                                         ##
+## ./sim <Depth List> <Width List> <#WritePorts List> <#ReadPorts List> <#Cycles> ##
+##                                                                                ##
+## -Use a comma delimited list; no spaces; can be surrounded by brackets ()[]{}<> ##
+## -RAM depth, width, number of read/write ports and cycles are positive integers ##
+##                                                                                ##
+## EXAMPLES:                                                                      ##
+## ./sim 1024 32 3 2 1000000                                                      ##
+##    Simulate 1M cycles of a 1K lines RAM, 32 bits width, 3 write & 2 read ports ##
+## ./sim 512,1024 8,16,32 2,3,4 1,2,3,4 1000000                                   ##
+##    Simulate 1M cycles of RAMs with 512 or 1024 lines, 8, 16, or 32 bits width, ##
+##    2,3, or 4 write ports, 1,2,3, or 4 read ports. Total of 72 RAM combinations ##
+##                                                                                ##
+## The following files and directories will be created after simulation :         ##
+##   - sim.res : A list of simulation results, each run in a separate line,       ##
+##               including all design styles.                                     ##
+####################################################################################
+
+# setup environment variables and cad tools 
+# change if necessary
+#source env.csh
+
+# setup Altera's Modelsim for simulation; change to your own flow if necessary 
+source /CMC/scripts/altera.12.0.csh
+setenv PATH ${QUARTUS_HOME}/../nios2eds/bin/:${QUARTUS_HOME}/../modelsim_ase/bin:${PATH}
+
+# create work if not exist
+if !(-d work) vlib work
+
+# require exactly 5 arguments
+if (${#argv} != 5) then
+    printf '\x1b[%i;3%im' 1 1
+    printf 'Error: Exactly 5 are required\n'
+    printf '\x1b[0m'
+    goto errorMessage
+endif
+
+# convert each argument list into a c-shell list (romove commas and etc.)
+set RDLST = (`echo ${argv[1]} | tr ",()[]{}<>" " "`)
+set DWLST = (`echo ${argv[2]} | tr ",()[]{}<>" " "`)
+set NWLST = (`echo ${argv[3]} | tr ",()[]{}<>" " "`)
+set NRLST = (`echo ${argv[4]} | tr ",()[]{}<>" " "`)
+set CYCC  = ${argv[5]}
+
+# check arguments correctness (positive integer numbers)
+foreach ARGVAL ($RDLST $DWLST $NWLST $NRLST $CYCC)
+  set ARGVALIsNumber=`echo $ARGVAL | egrep -c '^[0-9]+$'`
+  if ($ARGVALIsNumber != 1) then
+    printf '\x1b[%i;3%im' 1 1
+    printf "Error \(${INTVAL}\): Depth, width, numner of read/write ports arguments should be possitive integer numbers\n"
+    printf '\x1b[0m'
+    goto errorMessage
+  endif
+end
+
+# total different fifo designs
+@ FlowOprNum = ((${#RDLST})*(${#DWLST})*(${#NWLST})*(${#NRLST}))
+@ FlowOprCnt = 0
+
+printf '\x1b[%i;3%im' 7 4
+printf "= Simulate in batch with the following parameters:\n"
+printf "= RAM Depth         : $RDLST\n"
+printf "= Data Width        : $DWLST\n"
+printf "= Write Ports       : $NWLST\n"
+printf "= Read  Ports       : $NRLST\n"
+printf "= Simulation Cycles : $CYCC\n"
+printf '\x1b[0m'
+
+# operate on all different RAM parameters
+  foreach CURRD ($RDLST)
+    foreach CURDW ($DWLST)
+      foreach CURNW ($NWLST)
+        foreach CURNR ($NRLST)
+          @ FlowOprCnt++
+
+          printf '\x1b[%i;3%im' 7 2
+          printf "\n== Starting Simulation (${FlowOprCnt}/${FlowOprNum}): [Depth:${CURRD}; Width:${CURDW}; Writes:${CURNW}; Reads:${CURNR}; Cycles:${CYCC}]\n"
+          printf '\x1b[0m'
+
+          # run current simulation
+          vlog -work work +define+MEMD=$CURRD+DATAW=$CURDW+nWPORTS=$CURNW+nRPORTS=$CURNR+CYCC=$CYCC dpram.v lvt_bin.v mpram_gen.v mpram_lvt_bin.v mpram_reg.v mpram.v mpram_xor.v utils.vh lvt_1ht.v lvt_reg.v mpram_lvt_1ht.v mpram_lvt_reg.v mpram_tb.v mrram.v
+          vsim -c -L altera_mf_ver -L lpm_ver -do "run -all" mpram_tb
+
+          printf '\x1b[%i;3%im' 7 2
+          printf "== Simulation (${FlowOprCnt}/${FlowOprNum}) Completed: [Depth:${CURRD}; Width:${CURDW}; Writes:${CURNW}; Reads:${CURNR}; Cycles:${CYCC}]\n"
+          printf '\x1b[0m'
+
+      end
+    end
+  end
+end
+
+# clean unrequired files / after run
+ foreach fileName (*.mif *.hex *.ver *.wlf *.vstf *.log transcript work)
+   \rm -rf $fileName
+ end
+
+
+goto scriptEnd
+
+# error message
+errorMessage:
+printf '\x1b[%i;3%im' 1 1
+printf 'USAGE:\n'
+printf './sim <Depth List> <Width List> <#WritePorts List> <#ReadPorts List> <#Cycles>\n'
+printf '-Use a comma delimited list; no spaces; can be surrounded by brackets ()[]{}<>\n'
+printf '-RAM depth, width, number of read/write ports and cycles are positive integers\n'
+printf 'EXAMPLES:\n'
+printf './sim 1024 32 3 2 1000000\n'
+printf '   Simulate 1M cycles of a 1K lines RAM, 32 bits width, 3 write & 2 read ports\n'
+printf './sim 512,1024 8,16,32 2,3,4 1,2,3,4 1000000\n'
+printf '   Simulate 1M cycles of RAMs with 512 or 1024 lines, 8, 16, or 32 bits width,\n'
+printf '   2,3, or 4 write ports, 1,2,3, or 4 read ports. Total of 72 RAM combinations\n'
+printf 'The following files and directories will be created after simulation :        \n'
+printf '  - sim.res : A list of simulation results, each run in a separate line,      \n'
+printf '              including all design styles.                                    \n'
+printf '\x1b[0m'
+scriptEnd:
+
