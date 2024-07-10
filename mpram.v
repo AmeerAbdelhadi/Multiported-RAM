@@ -38,7 +38,8 @@ module mpram
      parameter DATAW   = 32       , // data width
      parameter nRPORTS = 2        , // number of reading ports
      parameter nWPORTS = 2        , // number of writing ports
-     parameter TYPE    = ""       , // implementation type: REG, XOR, LVTREG, LVTBIN, LVT1HT, AUTO
+     parameter TYPE    = ""       , // implementation type: REG, XOR, 
+                                    // LVTREG, LVTBIN, LVT1HT, AUTO - not supported with byte enable
      parameter BYP     = "RAW"    , // Bypassing type: NON, WAW, RAW, RDW
                                     // WAW: Allow Write-After-Write (need to bypass feedback ram)
                                     // RAW: new data for Read-after-Write (need to bypass output ram)
@@ -48,19 +49,11 @@ module mpram
      input       [nWPORTS-1:0            ] WEnb ,  // write enable for each writing port
      input       [`log2(MEMD)*nWPORTS-1:0] WAddr,  // write addresses - packed from nWPORTS write ports
      input       [DATAW      *nWPORTS-1:0] WData,  // write data - packed from nWPORTS read ports
+     input       [(DATAW/8)  *nWPORTS-1:0] WBe,   
      input       [`log2(MEMD)*nRPORTS-1:0] RAddr,  // read  addresses - packed from nRPORTS  read  ports
      output wire [DATAW      *nRPORTS-1:0] RData); // read  data - packed from nRPORTS read ports
 
   localparam ADDRW = `log2(MEMD); // address width
-
-  // Auto calculation of best method when TYPE="AUTO" is selected.
-  localparam l2nW     = `log2(nWPORTS);
-  localparam nBitsXOR = DATAW*(nWPORTS-1);
-  localparam nBitsBIN = l2nW*(nWPORTS+nRPORTS-1);
-  localparam nBits1HT = (nWPORTS-1)*(nRPORTS+1);
-  localparam AUTOTYPE = ( (nBits1HT<=nBitsXOR) && (nBits1HT<=nBitsBIN) ) ? "LVT1HT" : ( (nBitsBIN<=nBitsXOR) ? "BIN" : "XOR" );
-  // if TYPE is not one of known types (REG, XOR, LVTREG, LVTBIN, LVT1HT) choose auto (best) type
-  localparam iTYPE    = ((TYPE!="REG")&&(TYPE!="XOR")&&(TYPE!="LVTREG")&&(TYPE!="LVTBIN")&&(TYPE!="LVT1HT")) ? AUTOTYPE : TYPE;
 
   // Bypassing indicators
   localparam WAW =  BYP!="NON"               ; // allow Write-After-Write (need to bypass feedback ram)
@@ -72,7 +65,7 @@ module mpram
   generate
     if (nWPORTS==1) begin
       // instantiate multiread RAM
-      mrram            #( .MEMD   (MEMD      ),  // memory depth
+      mrram_be         #( .MEMD   (MEMD      ),  // memory depth
                           .DATAW  (DATAW     ),  // data width
                           .nRPORTS(nRPORTS   ),  // number of reading ports
                           .BYPASS (RDW?2:RAW ),  // bypass? 0:none; 1:single-stage; 2:two-stages
@@ -80,27 +73,11 @@ module mpram
       mrram_ins         ( .clk    (clk       ),  // clock                                            - in
                           .WEnb   (WEnb      ),  // write enable  (1 port)                           - in
                           .WAddr  (WAddr     ),  // write address (1 port)                           - in : [`log2(MEMD)        -1:0]
+                          .WBe    (WBe       ),
                           .WData  (WData     ),  // write data    (1 port)                           - in : [DATAW              -1:0]
                           .RAddr  (RAddr     ),  // read  addresses - packed from nRPORTS read ports - in : [`log2(MEMD)*nRPORTS-1:0]
                           .RData  (RData     )); // read  data      - packed from nRPORTS read ports - out: [DATAW      *nRPORTS-1:0]
-    end
-    else if (iTYPE=="REG"   ) begin
-      // instantiate multiported register-based RAM
-      mpram_reg        #( .MEMD   (MEMD      ),  // memory depth
-                          .DATAW  (DATAW     ),  // data width
-                          .nRPORTS(nRPORTS   ),  // number of reading ports
-                          .nWPORTS(nWPORTS   ),  // number of writing ports
-                          .RDW    (RDW       ),  // provide new data when Read-During-Write?
-                          .IFILE  (IFILE     ))  // initializtion file, optional
-      mpram_reg_ref     ( .clk    (clk       ),  // clock
-                          .WEnb   (WEnb      ),  // write enable for each writing port                - in : [nWPORTS-1:0            ]
-                          .WAddr  (WAddr     ),  // write addresses - packed from nWPORTS write ports - in : [`log2(MEMD)*nWPORTS-1:0]
-                          .WData  (WData     ),  // write data      - packed from nRPORTS read  ports - out: [DATAW      *nWPORTS-1:0]
-                          .RAddr  (RAddr     ),  // read  addresses - packed from nRPORTS read  ports - in : [`log2(MEMD)*nRPORTS-1:0]
-                          .RData  (RData     )); // read  data      - packed from nRPORTS read  ports - out: [DATAW      *nRPORTS-1:0]
-    end
-    else if (iTYPE=="XOR"   ) begin
-      // instantiate XOR-based multiported RAM
+    end else begin
       mpram_xor        #( .MEMD   (MEMD      ),  // memory depth
                           .DATAW  (DATAW     ),  // data width
                           .nRPORTS(nRPORTS   ),  // number of reading ports
@@ -112,55 +89,7 @@ module mpram
       mpram_xor_ins     ( .clk    (clk       ),  // clock
                           .WEnb   (WEnb      ),  // write enable for each writing port                - in : [nWPORTS-1:0            ]
                           .WAddr  (WAddr     ),  // write addresses - packed from nWPORTS write ports - in : [`log2(MEMD)*nWPORTS-1:0]
-                          .WData  (WData     ),  // write data      - packed from nRPORTS read  ports - out: [DATAW      *nWPORTS-1:0]
-                          .RAddr  (RAddr     ),  // read  addresses - packed from nRPORTS read  ports - in : [`log2(MEMD)*nRPORTS-1:0]
-                          .RData  (RData     )); // read  data      - packed from nRPORTS read  ports - out: [DATAW      *nRPORTS-1:0]
-    end
-    else if (iTYPE=="LVTREG") begin
-      // instantiate a multiported RAM with binary-coded register-based LVT
-      mpram_lvt_reg    #( .MEMD   (MEMD      ),  // memory depth
-                          .DATAW  (DATAW     ),  // data width
-                          .nRPORTS(nRPORTS   ),  // number of reading ports
-                          .nWPORTS(nWPORTS   ),  // number of writing ports
-                          .RDW    (RDW       ), // new data for Read-During-Write
-                          .IFILE  (IFILE     ))  // initializtion file, optional
-      mpram_lvt_reg_ins ( .clk    (clk       ),  // clock
-                          .WEnb   (WEnb      ),  // write enable for each writing port                - in : [nWPORTS-1:0            ]
-                          .WAddr  (WAddr     ),  // write addresses - packed from nWPORTS write ports - in : [`log2(MEMD)*nWPORTS-1:0]
-                          .WData  (WData     ),  // write data      - packed from nRPORTS read  ports - out: [DATAW      *nWPORTS-1:0]
-                          .RAddr  (RAddr     ),  // read  addresses - packed from nRPORTS read  ports - in : [`log2(MEMD)*nRPORTS-1:0]
-                          .RData  (RData     )); // read  data      - packed from nRPORTS read  ports - out: [DATAW      *nRPORTS-1:0]
-    end
-    else if (iTYPE=="LVTBIN") begin
-      // instantiate a multiported RAM with binary-coded SRAM LVT
-      mpram_lvt_bin    #( .MEMD   (MEMD      ),  // memory depth
-                          .DATAW  (DATAW     ),  // data width
-                          .nRPORTS(nRPORTS   ),  // number of reading ports
-                          .nWPORTS(nWPORTS   ),  // number of writing ports
-                          .WAW    (WAW       ), // allow Write-After-Write (need to bypass feedback ram)
-                          .RAW    (RAW       ), // new data for Read-after-Write (need to bypass output ram)
-                          .RDW    (RDW       ), // new data for Read-During-Write
-                          .IFILE  (IFILE     ))  // initializtion file, optional
-      mpram_lvt_bin_ins ( .clk    (clk       ),  // clock
-                          .WEnb   (WEnb      ),  // write enable for each writing port                - in : [nWPORTS-1:0            ]
-                          .WAddr  (WAddr     ),  // write addresses - packed from nWPORTS write ports - in : [`log2(MEMD)*nWPORTS-1:0]
-                          .WData  (WData     ),  // write data      - packed from nRPORTS read  ports - out: [DATAW      *nWPORTS-1:0]
-                          .RAddr  (RAddr     ),  // read  addresses - packed from nRPORTS read  ports - in : [`log2(MEMD)*nRPORTS-1:0]
-                          .RData  (RData     )); // read  data      - packed from nRPORTS read  ports - out: [DATAW      *nRPORTS-1:0]
-    end
-    else begin
-      // instantiate a multiported RAM with onehot-coded SRAM LVT
-      mpram_lvt_1ht    #( .MEMD   (MEMD      ),  // memory depth
-                          .DATAW  (DATAW     ),  // data width
-                          .nRPORTS(nRPORTS   ),  // number of reading ports
-                          .nWPORTS(nWPORTS   ),  // number of writing ports
-                          .WAW    (WAW       ), // allow Write-After-Write (need to bypass feedback ram)
-                          .RAW    (RAW       ), // new data for Read-after-Write (need to bypass output ram)
-                          .RDW    (RDW       ), // new data for Read-During-Write
-                          .IFILE  (IFILE     ))  // initializtion file, optional
-      mpram_lvt_1ht_ins ( .clk    (clk       ),  // clock
-                          .WEnb   (WEnb      ),  // write enable for each writing port                - in : [nWPORTS-1:0            ]
-                          .WAddr  (WAddr     ),  // write addresses - packed from nWPORTS write ports - in : [`log2(MEMD)*nWPORTS-1:0]
+                          .WBe    (WBe       ),
                           .WData  (WData     ),  // write data      - packed from nRPORTS read  ports - out: [DATAW      *nWPORTS-1:0]
                           .RAddr  (RAddr     ),  // read  addresses - packed from nRPORTS read  ports - in : [`log2(MEMD)*nRPORTS-1:0]
                           .RData  (RData     )); // read  data      - packed from nRPORTS read  ports - out: [DATAW      *nRPORTS-1:0]

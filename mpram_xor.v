@@ -45,6 +45,7 @@ module mpram_xor
   )( input                                clk  ,  // clock
      input      [nWPORTS-1:0            ] WEnb ,  // write enable for each writing port
      input      [`log2(MEMD)*nWPORTS-1:0] WAddr,  // write addresses - packed from nWPORTS write ports
+     input      [(DATAW/8)  *nWPORTS-1:0] WBe,  
      input      [DATAW      *nWPORTS-1:0] WData,  // write data - packed from nWPORTS read ports
      input      [`log2(MEMD)*nRPORTS-1:0] RAddr,  // read  addresses - packed from nRPORTS  read  ports
      output reg [DATAW      *nRPORTS-1:0] RData); // read  data - packed from nRPORTS read ports
@@ -52,11 +53,13 @@ module mpram_xor
   localparam ADDRW = `log2(MEMD); // address width
 
   // Register write addresses, data and enables
-  reg [ADDRW*nWPORTS-1:0] WAddr_r; // registered write addresses - packed from nWPORTS write ports
-  reg [DATAW*nWPORTS-1:0] WData_r; // registered write data - packed from nWPORTS read ports
-  reg [      nWPORTS-1:0] WEnb_r ; // registered write enable for each writing port
+  reg [    ADDRW*nWPORTS-1:0] WAddr_r; // registered write addresses - packed from nWPORTS write ports
+  reg [(DATAW/8)*nWPORTS-1:0] WBe_r;
+  reg [    DATAW*nWPORTS-1:0] WData_r; // registered write data - packed from nWPORTS read ports
+  reg [          nWPORTS-1:0] WEnb_r ; // registered write enable for each writing port
   always @(posedge clk) begin
     WAddr_r <= WAddr;
+    WBe_r   <= WBe;
     WData_r <= WData;
     WEnb_r  <= WEnb ;
   end
@@ -64,6 +67,8 @@ module mpram_xor
   // unpacked/pack addresses/data
   reg  [ADDRW            -1:0] WAddr2D    [nWPORTS-1:0]             ; // write addresses            / 2D
   reg  [ADDRW            -1:0] WAddr2D_r  [nWPORTS-1:0]             ; // registered write addresses / 2D
+  reg  [(DATAW/8)        -1:0] WBe2D      [nWPORTS-1:0]             ; 
+  reg  [(DATAW/8)        -1:0] WBe2D_r    [nWPORTS-1:0]             ;
   reg  [DATAW            -1:0] WData2D    [nWPORTS-1:0]             ; // write data                 / 2D 
   reg  [DATAW            -1:0] WData2D_r  [nWPORTS-1:0]             ; // registered write data      / 2D
   wire [DATAW* nRPORTS   -1:0] RDataOut2D [nWPORTS-1:0]             ; // read data out              / 2D
@@ -73,17 +78,20 @@ module mpram_xor
   wire [DATAW*(nWPORTS-1)-1:0] RDataFB2D  [nWPORTS-1:0]             ; // read data fb               / 2D
   reg  [DATAW            -1:0] RDataFB3D  [nWPORTS-1:0][nWPORTS-2:0]; // read data fb               / 3D
   reg  [DATAW            -1:0] WDataFB2D  [nWPORTS-1:0]             ; // write data                 / 2D
+  reg  [(DATAW/8)        -1:0] WBeFB2D    [nWPORTS-1:0]             ; // write data                 / 2D
   reg  [DATAW            -1:0] RData2D    [nRPORTS-1:0]             ; // read data                  / 2D 
   `ARRINIT;
   always @* begin
-    `ARR1D2D(nWPORTS,          ADDRW,WAddr     ,WAddr2D   );
-    `ARR1D2D(nWPORTS,          ADDRW,WAddr_r   ,WAddr2D_r );
-    `ARR1D2D(nWPORTS,          DATAW,WData     ,WData2D   );
-    `ARR1D2D(nWPORTS,          DATAW,WData_r   ,WData2D_r );
-    `ARR2D1D(nRPORTS,          DATAW,RData2D   ,RData     );
-    `ARR2D3D(nWPORTS,nRPORTS  ,DATAW,RDataOut2D,RDataOut3D);
-    `ARR3D2D(nWPORTS,nWPORTS-1,ADDRW,RAddrFB3D ,RAddrFB2D );
-    `ARR2D3D(nWPORTS,nWPORTS-1,DATAW,RDataFB2D ,RDataFB3D );
+    `ARR1D2D(nWPORTS,            ADDRW,WAddr     ,WAddr2D   );
+    `ARR1D2D(nWPORTS,            ADDRW,WAddr_r   ,WAddr2D_r );
+    `ARR1D2D(nWPORTS,          DATAW/8,WBe       ,WBe2D   );
+    `ARR1D2D(nWPORTS,          DATAW/8,WBe_r     ,WBe2D_r );
+    `ARR1D2D(nWPORTS,            DATAW,WData     ,WData2D   );
+    `ARR1D2D(nWPORTS,            DATAW,WData_r   ,WData2D_r );
+    `ARR2D1D(nRPORTS,            DATAW,RData2D   ,RData     );
+    `ARR2D3D(nWPORTS,nRPORTS  ,  DATAW,RDataOut2D,RDataOut3D);
+    `ARR3D2D(nWPORTS,nWPORTS-1,  ADDRW,RAddrFB3D ,RAddrFB2D );
+    `ARR2D3D(nWPORTS,nWPORTS-1,  DATAW,RDataFB2D ,RDataFB3D );
   end
 
   // generate and instantiate mulriread RAM blocks
@@ -91,7 +99,7 @@ module mpram_xor
   generate
     for (wpi=0 ; wpi<nWPORTS ; wpi=wpi+1) begin: RPORTwpi
       // feedback multiread ram instantiation
-      mrram    #( .MEMD   (MEMD                ),  // memory depth
+      mrram_be #( .MEMD   (MEMD                ),  // memory depth
                   .DATAW  (DATAW               ),  // data width
                   .nRPORTS(nWPORTS-1           ),  // number of reading ports
                   .BYPASS (WAW || RDW || RAW   ),  // bypass? 0:none; 1:single-stage; 2:two-stages
@@ -100,11 +108,12 @@ module mpram_xor
       mrram_fdb ( .clk    (clk                 ),  // clock                                            - in
                   .WEnb   (WEnb_r[wpi]         ),  // write enable  (1 port)                           - in
                   .WAddr  (WAddr2D_r[wpi]      ),  // write address (1 port)                           - in : [`log2(MEMD)        -1:0]
+                  .WBe    (WBe2D_r[wpi]        ),
                   .WData  (WDataFB2D[wpi]      ),  // write data    (1 port)                           - in : [DATAW              -1:0]
                   .RAddr  (RAddrFB2D[wpi]      ),  // read  addresses - packed from nRPORTS read ports - in : [`log2(MEMD)*nRPORTS-1:0]
                   .RData  (RDataFB2D[wpi]      )); // read  data      - packed from nRPORTS read ports - out: [DATAW      *nRPORTS-1:0]
       // output multiread ram instantiation
-      mrram    #( .MEMD   (MEMD                ),  // memory depth
+      mrram_be #( .MEMD   (MEMD                ),  // memory depth
                   .DATAW  (DATAW               ),  // data width
                   .nRPORTS(nRPORTS             ),  // number of reading ports
                   .BYPASS (RDW ? 2 : RAW       ),  // bypass? 0:none; 1:single-stage; 2:two-stages
@@ -113,6 +122,7 @@ module mpram_xor
       mrram_out ( .clk    (clk                 ),  // clock                                            - in
                   .WEnb   (WEnb_r[wpi]         ),  // write enable  (1 port)                           - in
                   .WAddr  (WAddr2D_r[wpi]      ),  // write address (1 port)                           - in : [`log2(MEMD)        -1:0]
+                  .WBe    (WBe2D_r[wpi]        ),
                   .WData  (WDataFB2D[wpi]      ),  // write data    (1 port)                           - in : [DATAW              -1:0]
                   .RAddr  (RAddr               ),  // read  addresses - packed from nRPORTS read ports - in : [`log2(MEMD)*nRPORTS-1:0]
                   .RData  (RDataOut2D[wpi]     )); // read  data      - packed from nRPORTS read ports - out: [DATAW      *nRPORTS-1:0]
@@ -121,7 +131,7 @@ module mpram_xor
   endgenerate
 
   // combinatorial logic for output and feedback functions
-  integer i,j,k;
+  integer i,j,k,n;
   always @* begin
     // generate output read functions
     for(i=0;i<nRPORTS;i=i+1) begin
@@ -130,12 +140,19 @@ module mpram_xor
     end
     // generate feedback functions
     for(i=0;i<nWPORTS;i=i+1) WDataFB2D[i] = WData2D_r[i];
+    for(i=0;i<nWPORTS;i=i+1) WBeFB2D[i]   = WBe2D_r[i];
     for(i=0;i<nWPORTS;i=i+1) begin
       k = 0;
       for(j=0;j<nWPORTS-1;j=j+1) begin
         k=k+(j==i);
         RAddrFB3D[i][j] = WAddr2D[k];
-        WDataFB2D[k] = WDataFB2D[k] ^ RDataFB3D[i][j];
+        for(n=0; n<DATAW/8; n=n+1) begin
+          if (WBeFB2D[k][n]) begin
+            WDataFB2D[k][n*8 +: 8] = WDataFB2D[k][n*8 +: 8] ^ RDataFB3D[i][j][n*8 +: 8];
+          end else begin
+            WDataFB2D[k][n*8 +: 8] = RDataFB3D[i][j][n*8 +: 8];
+          end
+        end
         k=k+1;
       end
     end
