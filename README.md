@@ -10,8 +10,9 @@ A fully parameterized and generic Verilog implementation of the suggested modula
 Please refer to the full paper for more information:
 
 **A. M.S. Abdelhadi and G. G.F. Lemieux, "Modular Multi-ported SRAM-based Memories," ACM/SIGDA Intl Symp. on Field-Programmable. Gate Arrays (FPGA 14), Feb. 2014.**
-http://www.ece.ubc.ca/~lemieux/publications/abdelhadi-fpga2014.pdf
-
+**DOI:** http://dx.doi.org/10.1145/2554688.2554773
+**Paper:** https://www.ece.mcmaster.ca/~ameer/publications/Abdelhadi-Conference-2014Feb-FPGA2014-MultiportedRAM.pdf
+**Talk:** https://www.ece.mcmaster.ca/~ameer/publications/Abdelhadi-Talk-2014Feb-FPGA2014-MultiportedRAM.pdf
 
 ---
 
